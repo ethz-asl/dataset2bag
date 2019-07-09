@@ -55,6 +55,8 @@ struct CameraParameters {
   size_t width, height;
 };
 
+enum ImageType { rgb = 0, depth };
+
 bool process_args(int argc, char** argv, po::variables_map& options) {
   po::options_description options_description("Options");
   options_description.add_options()(
@@ -70,35 +72,50 @@ bool process_args(int argc, char** argv, po::variables_map& options) {
            "saved in their original compressed format. Specify the compression "
            "format, either \"png\" or \"jpg\"")
 
-              ("odometry", po::value<std::string>(),
-               "path to file containing 2D odometry data")
+              ("depth,d", po::value<std::string>(),
+               "glob pattern of depth images (e.g. \"img/*.png\") from which "
+               "to extract frames")
 
-                  ("output,o", po::value<std::string>()->required(),
-                   "output bag file")
+                  ("masks,m", po::value<std::string>(),
+                   "glob pattern of mask images (e.g. \"img/*.png\") from "
+                   "which to extract ground truth object pointclouds")
 
-                      ("calib,c", po::value<std::string>(),
-                       "left camera calibration parameters file")
+                      ("odometry", po::value<std::string>(),
+                       "path to file containing 2D odometry data")
 
-                          ("calib_right", po::value<std::string>(),
-                           "right camera calibration parameters file")
+                          ("output,o", po::value<std::string>()->required(),
+                           "output bag file")
 
-                              ("timestamps,t", po::value<std::string>(),
-                               "path to file containing timestamps")
+                              ("calib,c", po::value<std::string>(),
+                               "left camera calibration parameters file")
 
-                                  ("imu", po::value<std::string>(),
-                                   "path to IMU data file")(
-                                      "groundtruth", po::value<std::string>(),
-                                      "path to ground-truth data file")(
-                                      "gt-with-covariance",
-                                      "if specified, the ground-truth file "
-                                      "contains covariance information")
+                                  ("calib_right", po::value<std::string>(),
+                                   "right camera calibration parameters file")
 
-                                      ("chunk-size", po::value<int>(),
-                                       "set chunk size in KB of bag file "
-                                       "(default: 768)")
+                                      ("timestamps,t", po::value<std::string>(),
+                                       "path to file containing timestamps")
+
+                                          ("imu", po::value<std::string>(),
+                                           "path to IMU data file")(
+                                              "groundtruth",
+                                              po::value<std::string>(),
+                                              "path to ground-truth data file")(
+                                              "groundtruth-3d",
+                                              po::value<std::string>(),
+                                              "path to 3D ground-truth data "
+                                              "file")(
+                                              "gt-with-covariance",
+                                              "if specified, the ground-truth "
+                                              "file "
+                                              "contains covariance information")
+
+                                              ("chunk-size", po::value<int>(),
+                                               "set chunk size in KB of bag "
+                                               "file "
+                                               "(default: 768)")
 
       //("static-transforms", po::value<std::string>(), "path to file containing
-      //static transforms between sensors")
+      // static transforms between sensors")
       ("laser", po::value<std::string>(), "path to laser scans file")
 
           ("help,h", "show this help");
@@ -281,7 +298,8 @@ void saveStream(cv::VideoCapture& capture, sensor_msgs::CameraInfo camera_info,
   }
 }
 
-void saveStream(const std::vector<boost::filesystem::directory_entry>& entries,
+void saveStream(const ImageType& image_type,
+                const std::vector<boost::filesystem::directory_entry>& entries,
                 sensor_msgs::CameraInfo camera_info,
                 const std::vector<ros::Time>& times,
                 const std::string& frame_id, const std::string& topic,
@@ -293,9 +311,15 @@ void saveStream(const std::vector<boost::filesystem::directory_entry>& entries,
 
   for (const auto& entry : entries) {
     if (compression_format.empty()) {
-      ros_image.image = cv::imread(entry.path().string());
-      cv::cvtColor(ros_image.image, ros_image.image, CV_BGR2RGB);
-      ros_image.encoding = "rgb8";
+      if (image_type == ImageType::rgb) {
+        ros_image.image = cv::imread(entry.path().string());
+        cv::cvtColor(ros_image.image, ros_image.image, CV_BGR2RGB);
+        ros_image.encoding = "rgb8";
+      } else {
+        ros_image.image =
+            cv::imread(entry.path().string(), cv::IMREAD_UNCHANGED);
+        ros_image.encoding = sensor_msgs::image_encodings::TYPE_32FC1;
+      }
 
       sensor_msgs::ImagePtr ros_image_msg;
       ros_image_msg = ros_image.toImageMsg();
@@ -326,7 +350,8 @@ void saveStream(const std::vector<boost::filesystem::directory_entry>& entries,
   }
 }
 
-void process_images(const std::string& images_parameter,
+void process_images(const ImageType& image_type,
+                    const std::string& images_parameter,
                     const sensor_msgs::CameraInfo& cam_info,
                     const std::vector<ros::Time>& timestamps,
                     const std::string& frame, const std::string& topic,
@@ -373,8 +398,9 @@ void process_images(const std::string& images_parameter,
       throw std::runtime_error(
           "Number of frames does not match number of timestamps");
 
-    saveStream(entries, cam_info, timestamps, frame, topic, compression_format,
-               bag);
+    saveStream(image_type, entries, cam_info, timestamps, frame, topic,
+               compression_format, bag);
+
   } else {
     throw std::runtime_error("Invalid images parameter input");
   }
@@ -567,6 +593,51 @@ void saveGT(const std::string& filename, rosbag::Bag& bag,
   }
 }
 
+void saveGT3D(const std::string& filename,
+              const std::vector<ros::Time>& timestamps, rosbag::Bag& bag) {
+  pretty_ifstream ifs(80, filename, std::ios::in);
+
+  size_t seq = 0;
+  std::string line;
+  while (std::getline(ifs, line)) {
+    std::stringstream ss(line);
+
+    // Format: index x y z qx qy qz qw
+    int index;
+    float x, y, z, qx, qy, qz, qw;
+
+    ss >> index;  // Unused.
+    ss >> x >> y >> z >> qx >> qy >> qz >> qw;
+
+    if (!ss) throw std::runtime_error("Invalid GT entry!");
+
+    ros::Time stamp = timestamps[seq];
+
+    // write tf message
+    geometry_msgs::TransformStamped tmsg;
+    tmsg.header.stamp = stamp;
+    tmsg.header.frame_id = "world";
+    tmsg.child_frame_id = "camera";
+    tmsg.transform.translation.x = x;
+    tmsg.transform.translation.y = y;
+    tmsg.transform.translation.z = z;
+    tf::Quaternion Q(qx, qy, qz, qw);
+    tf::quaternionTFToMsg(Q, tmsg.transform.rotation);
+
+    tf::tfMessage tf_msg;
+    tf_msg.transforms.push_back(tmsg);
+    tf_msg.transforms.back().header.frame_id =
+        tf::resolve("", tf_msg.transforms.back().header.frame_id);
+    tf_msg.transforms.back().child_frame_id =
+        tf::resolve("", tf_msg.transforms.back().child_frame_id);
+
+    bag.write("/tf", stamp, tf_msg);
+
+    seq++;
+    ifs.drawbar();
+  }
+}
+
 void saveLaser(const std::string& filename, rosbag::Bag& bag) {
   pretty_ifstream ifs(80, filename, std::ios::in);
 
@@ -633,6 +704,16 @@ int main(int argc, char** argv) {
     bag.setChunkThreshold(chunk_size * 1024);
   }
 
+  std::vector<ros::Time> timestamps;
+  /* load timestamps from file */
+  if (options.count("timestamps")) {
+    std::cout << "Parsing timestamps ..." << std::endl;
+    timestamps = loadTimestamps(options["timestamps"].as<std::string>());
+    if (timestamps.empty())
+      throw std::runtime_error("No timestamps were found in timestamps file");
+    std::cout << "loaded: " << timestamps.size() << " timestamps" << std::endl;
+  }
+
   if (options.count("odometry")) {
     std::cout << "Parsing odometry file..." << std::endl;
     saveOdometry(options["odometry"].as<std::string>(), bag);
@@ -650,6 +731,11 @@ int main(int argc, char** argv) {
               << std::endl;
     saveGT(options["groundtruth"].as<std::string>(), bag,
            options.count("gt-with-covariance"));
+  }
+
+  if (options.count("groundtruth-3d")) {
+    std::cout << "Parsing ground-truth data..." << std::endl;
+    saveGT3D(options["groundtruth-3d"].as<std::string>(), timestamps, bag);
   }
 
   if (options.count("laser")) {
@@ -689,31 +775,31 @@ int main(int argc, char** argv) {
       cam_info_left = loadCameraInfo(left_calib);
     }
 
-    std::vector<ros::Time> timestamps;
-    /* load timestamps from file */
-    if (options.count("timestamps")) {
-      std::cout << "Parsing timestamps ..." << std::endl;
-      timestamps = loadTimestamps(options["timestamps"].as<std::string>());
-      if (timestamps.empty())
-        throw std::runtime_error("No timestamps were found in timestamps file");
-      std::cout << "loaded: " << timestamps.size() << " timestamps"
-                << std::endl;
-    }
-
     /* load images */
+    ImageType image_type = ImageType::rgb;
     if (options.count("images_right")) {
       std::cout << "Parsing left stereo images ..." << std::endl;
-      process_images(options["images"].as<std::string>(), cam_info_left,
-                     timestamps, "camera_left", "/stereo/left",
+      process_images(image_type, options["images"].as<std::string>(),
+                     cam_info_left, timestamps, "camera_left", "/stereo/left",
                      compression_format, bag);
       std::cout << "Parsing right stereo images ..." << std::endl;
-      process_images(options["images_right"].as<std::string>(), cam_info_right,
-                     timestamps, "camera_right", "/stereo/right",
-                     compression_format, bag);
+      process_images(image_type, options["images_right"].as<std::string>(),
+                     cam_info_right, timestamps, "camera_right",
+                     "/stereo/right", compression_format, bag);
     } else {
       std::cout << "Parsing camera images ..." << std::endl;
-      process_images(options["images"].as<std::string>(), cam_info_left,
-                     timestamps, "camera", "/camera", compression_format, bag);
+      process_images(image_type, options["images"].as<std::string>(),
+                     cam_info_left, timestamps, "camera", "/camera/rgb",
+                     compression_format, bag);
+    }
+
+    /* load depth*/
+    image_type = ImageType::depth;
+    if (options.count("depth")) {
+      std::cout << "Parsing depth images ..." << std::endl;
+      process_images(image_type, options["depth"].as<std::string>(),
+                     cam_info_left, timestamps, "camera", "/camera/depth",
+                     compression_format, bag);
     }
   }
 
