@@ -24,6 +24,16 @@ Single camera example:
 
     dataset2bag --images=img --calib=calibration.txt --timestamps=timestamps.txt -o out.bag
 
+## Depth images
+
+The converter expects a directory where depth images should be stored. Depth images are read in alphabetical order.
+
+For reading images, the corresponding timestamp of each image is expected. This is supplied in a file containing this data.
+
+Example:
+
+    dataset2bag --depth=depth_original --calib=calibration.txt --timestamps=timestamps.txt -o out.bag
+
 ### Camera Calibration Syntax
 
 The camera calibration contains the image size, all instrinsic (3x3 matric) and extrinsic (3x3 for rotation and 3x1 for translation) parameters of the camera, plus distortion coefficients (5x1). In the monocular case, the extrinsic parameters should be set to an identity rotation matrix and a zero translation vector.
@@ -80,6 +90,14 @@ With covariance:
 
     [seconds] [nanoseconds] [x] [y] [theta] [Cxx] [Cxy] [Cxt] [Cyx] [Cyy] [Cyt] [Ctx] [Cty] [Ctt]
 
+## 3D Ground-truth
+
+This is used to store 3D poses as TF transform (from /world to /camera frames).
+
+Format:
+
+    [index] [x] [y] [z] [qx] [qy] [qz] [qw]
+
 ## Laser
 
 This file should first start with some parameters:
@@ -91,5 +109,3 @@ where angles are in degrees and distances in meters.
 Then, for each scan there should be a line as:
 
     [seconds] [nanoseconds] [range_1] ... [range_N]
-
-

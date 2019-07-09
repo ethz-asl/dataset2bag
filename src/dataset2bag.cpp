@@ -602,7 +602,7 @@ void saveGT3D(const std::string& filename,
   while (std::getline(ifs, line)) {
     std::stringstream ss(line);
 
-    // Format: index x y z qx qy qz qw
+    // Input format: index x y z qx qy qz qw
     int index;
     float x, y, z, qx, qy, qz, qw;
 
