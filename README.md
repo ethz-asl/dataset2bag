@@ -8,7 +8,7 @@ To see the available parameters use:
 
 This package supports the following type of sensors:
 
-* Images (either mono or stereo camera) + calibration
+* Images (either mono, stereo or RGB-D camera) + calibration
 * Odometry
 * Imu
 * Laser
