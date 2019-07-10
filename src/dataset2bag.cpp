@@ -4,6 +4,8 @@
 #include <geometry_msgs/TransformStamped.h>
 #include <image_geometry/pinhole_camera_model.h>
 #include <nav_msgs/Odometry.h>
+#include <pcl/point_types.h>
+#include <pcl_ros/point_cloud.h>
 #include <ros/ros.h>
 #include <rosbag/bag.h>
 #include <sensor_msgs/CameraInfo.h>
@@ -252,6 +254,31 @@ void loadStereoCameraCalibration(const std::string& filename_left,
   CP_MAT_TO_ARRAY(P2, cam_info_right.P);
 }
 
+void getFileList(const boost::filesystem::path images_path,
+                 std::vector<boost::filesystem::directory_entry>* entries,
+                 size_t* frame_count) {
+  std::copy(boost::filesystem::directory_iterator(images_path),
+            boost::filesystem::directory_iterator(), back_inserter(*entries));
+  std::sort(entries->begin(), entries->end(),
+            [](const boost::filesystem::directory_entry& entry1,
+               const boost::filesystem::directory_entry& entry2) -> bool {
+              return entry1.path().filename() < entry2.path().filename();
+            });
+
+  std::vector<boost::filesystem::directory_entry> filtered_entries(
+      entries->size());
+  auto end_it = std::remove_copy_if(
+      entries->begin(), entries->end(), filtered_entries.begin(),
+      [](const boost::filesystem::directory_entry& entry) -> bool {
+        return !boost::filesystem::is_regular_file(entry.path());
+      });
+
+  filtered_entries.resize(std::distance(filtered_entries.begin(), end_it));
+  *entries = filtered_entries;
+
+  *frame_count = entries->size();
+}
+
 void saveStream(cv::VideoCapture& capture, sensor_msgs::CameraInfo camera_info,
                 const std::vector<ros::Time>& times,
                 const std::string& frame_id, const std::string& topic,
@@ -350,6 +377,79 @@ void saveStream(const ImageType& image_type,
   }
 }
 
+void saveInstancePointClouds(
+    const std::vector<boost::filesystem::directory_entry>& mask_entries,
+    const std::vector<boost::filesystem::directory_entry>& depth_entries,
+    const std::vector<boost::filesystem::directory_entry>& rgb_entries,
+    sensor_msgs::CameraInfo camera_info, const std::vector<ros::Time>& times,
+    const std::string& frame_id, const std::string& topic, rosbag::Bag& bag) {
+  cv_bridge::CvImage ros_image;
+  ProgressBar progress(80);
+
+  for (size_t seq = 0u; seq < mask_entries.size(); ++seq) {
+    cv::Mat mask =
+        cv::imread(mask_entries[seq].path().string(), cv::IMREAD_UNCHANGED);
+
+    cv::Mat depth =
+        cv::imread(depth_entries[seq].path().string(), cv::IMREAD_UNCHANGED);
+
+    cv::Mat rgb = cv::imread(rgb_entries[seq].path().string());
+    cv::cvtColor(rgb, rgb, CV_BGR2RGB);
+
+    std::map<uint8_t, pcl::PointCloud<pcl::PointSurfel> >
+        instance_pointcloud_map;
+    std::map<uint8_t, pcl::PointCloud<pcl::PointSurfel> >::iterator it;
+
+    for (int u = 0; u < mask.rows; ++u) {
+      for (int v = 0; v < mask.cols; ++v) {
+        float z = depth.at<float>(u, v);
+        if (z != 0.0f) {
+          uint8_t instance_id = mask.at<uint8_t>(u, v);
+          pcl::PointSurfel point_surfel;
+          float u0 = camera_info.K[5];
+          float v0 = camera_info.K[2];
+          float fy = camera_info.K[4];
+          float fx = camera_info.K[0];
+
+          point_surfel.x = (float)((v - v0) * z / fx);
+          point_surfel.y = (float)((u - u0) * z / fy);
+          point_surfel.z = z;
+
+          point_surfel.r = rgb.at<cv::Vec3b>(u, v)[0];
+          point_surfel.g = rgb.at<cv::Vec3b>(u, v)[1];
+          point_surfel.b = rgb.at<cv::Vec3b>(u, v)[2];
+
+          // Append PointSurfel to the pointcloud of the corresponding instance.
+          it = instance_pointcloud_map.find(instance_id);
+          if (it != instance_pointcloud_map.end()) {
+            it->second.push_back(point_surfel);
+          } else {
+            pcl::PointCloud<pcl::PointSurfel> pcl_pointcloud;
+            pcl_pointcloud.push_back(point_surfel);
+            instance_pointcloud_map.emplace(instance_id, pcl_pointcloud);
+          }
+        }
+      }
+    }
+
+    // Convert to pointcloud2 message.
+    pcl::PCLPointCloud2 pcl_pointcloud2;
+    for (const auto& instance_pointcloud_pair : instance_pointcloud_map) {
+      const pcl::PointCloud<pcl::PointSurfel>& instance_pointcloud =
+          instance_pointcloud_pair.second;
+      sensor_msgs::PointCloud2Ptr pointcloud_msg(new sensor_msgs::PointCloud2);
+      pcl::toPCLPointCloud2(instance_pointcloud, pcl_pointcloud2);
+      pcl_conversions::fromPCL(pcl_pointcloud2, *pointcloud_msg);
+      pointcloud_msg->header.seq = seq;
+      pointcloud_msg->header.frame_id = "camera";
+      pointcloud_msg->header.stamp = times[seq];
+      bag.write(topic, times[seq], pointcloud_msg);
+    }
+
+    progress.drawbar(float(seq) / times.size());
+  }
+}
+
 void process_images(const ImageType& image_type,
                     const std::string& images_parameter,
                     const sensor_msgs::CameraInfo& cam_info,
@@ -373,26 +473,8 @@ void process_images(const ImageType& image_type,
     saveStream(capture, cam_info, timestamps, frame, topic, bag);
   } else if (boost::filesystem::is_directory(images_path)) {
     std::vector<boost::filesystem::directory_entry> entries;
-    std::copy(boost::filesystem::directory_iterator(images_path),
-              boost::filesystem::directory_iterator(), back_inserter(entries));
-    std::sort(entries.begin(), entries.end(),
-              [](const boost::filesystem::directory_entry& entry1,
-                 const boost::filesystem::directory_entry& entry2) -> bool {
-                return entry1.path().filename() < entry2.path().filename();
-              });
+    getFileList(images_path, &entries, &frame_count);
 
-    std::vector<boost::filesystem::directory_entry> filtered_entries(
-        entries.size());
-    auto end_it = std::remove_copy_if(
-        entries.begin(), entries.end(), filtered_entries.begin(),
-        [](const boost::filesystem::directory_entry& entry) -> bool {
-          return !boost::filesystem::is_regular_file(entry.path());
-        });
-
-    filtered_entries.resize(std::distance(filtered_entries.begin(), end_it));
-    entries = filtered_entries;
-
-    frame_count = entries.size();
     std::cout << "Found " << frame_count << " images in directory" << std::endl;
     if (frame_count != timestamps.size())
       throw std::runtime_error(
@@ -403,6 +485,48 @@ void process_images(const ImageType& image_type,
 
   } else {
     throw std::runtime_error("Invalid images parameter input");
+  }
+}
+
+void process_masks(const std::string& mask_images_parameter,
+                   const std::string& depth_images_parameter,
+                   const std::string& rgb_images_parameter,
+                   const sensor_msgs::CameraInfo& cam_info,
+                   const std::vector<ros::Time>& timestamps,
+                   const std::string& frame, const std::string& topic,
+                   rosbag::Bag& bag) {
+  size_t mask_frame_count;
+  size_t depth_frame_count;
+  size_t rgb_frame_count;
+
+  boost::filesystem::path mask_images_path(mask_images_parameter);
+  boost::filesystem::path depth_images_path(depth_images_parameter);
+  boost::filesystem::path rgb_images_path(rgb_images_parameter);
+
+  if (boost::filesystem::is_directory(mask_images_path) &&
+      boost::filesystem::is_directory(depth_images_path) &&
+      boost::filesystem::is_directory(rgb_images_path)) {
+    std::vector<boost::filesystem::directory_entry> mask_entries;
+    std::vector<boost::filesystem::directory_entry> depth_entries;
+    std::vector<boost::filesystem::directory_entry> rgb_entries;
+
+    getFileList(mask_images_path, &mask_entries, &mask_frame_count);
+    getFileList(depth_images_path, &depth_entries, &depth_frame_count);
+    getFileList(rgb_images_path, &rgb_entries, &rgb_frame_count);
+
+    std::cout << "Found " << mask_frame_count << " mask images, "
+              << depth_frame_count << " depth images and " << rgb_frame_count
+              << " in directory" << std::endl;
+    if (mask_frame_count != depth_frame_count ||
+        mask_frame_count != rgb_frame_count)
+      throw std::runtime_error(
+          "Number of frames does not match between mask and depth");
+
+    saveInstancePointClouds(mask_entries, depth_entries, rgb_entries, cam_info,
+                            timestamps, frame, topic, bag);
+
+  } else {
+    throw std::runtime_error("Invalid mask and depth images parameter input");
   }
 }
 
@@ -796,10 +920,18 @@ int main(int argc, char** argv) {
     /* load depth*/
     image_type = ImageType::depth;
     if (options.count("depth")) {
-      std::cout << "Parsing depth images ..." << std::endl;
+      std::cout << "\nParsing depth images ..." << std::endl;
       process_images(image_type, options["depth"].as<std::string>(),
                      cam_info_left, timestamps, "camera", "/camera/depth",
                      compression_format, bag);
+    }
+
+    if (options.count("masks")) {
+      std::cout << "\nParsing mask images ..." << std::endl;
+      process_masks(options["masks"].as<std::string>(),
+                    options["depth"].as<std::string>(),
+                    options["images"].as<std::string>(), cam_info_left,
+                    timestamps, "camera", "/camera/object_segment", bag);
     }
   }
 

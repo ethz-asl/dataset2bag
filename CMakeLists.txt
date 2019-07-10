@@ -9,7 +9,7 @@ set(CMAKE_CXX_FLAGS "-std=c++11 -Wall ${CMAKE_CXX_FLAGS}")
 ## Find catkin macros and libraries
 ## if COMPONENTS list like find_package(catkin REQUIRED COMPONENTS xyz)
 ## is used, also find other catkin packages
-find_package(catkin REQUIRED COMPONENTS cv_bridge rosbag roscpp sensor_msgs tf)
+find_package(catkin REQUIRED COMPONENTS cv_bridge pcl_ros rosbag roscpp sensor_msgs tf)
 find_package(OpenCV REQUIRED)
 find_package(Boost REQUIRED program_options filesystem)
 
@@ -106,7 +106,7 @@ target_link_libraries(dataset2bag
 # )
 
 ## Mark executables and/or libraries for installation
-install(TARGETS dataset2bag 
+install(TARGETS dataset2bag
   ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}

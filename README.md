@@ -26,13 +26,23 @@ Single camera example:
 
 ## Depth images
 
-The converter expects a directory where depth images should be stored. Depth images are read in alphabetical order.
+The converter expects a directory where depth images should be stored. Images are read in alphabetical order.
 
 For reading images, the corresponding timestamp of each image is expected. This is supplied in a file containing this data.
 
 Example:
 
     dataset2bag --depth=depth_original --calib=calibration.txt --timestamps=timestamps.txt -o out.bag
+
+## Mask images
+
+The converter expects a directory where instance mask images should be stored. Images are read in alphabetical order. The converter will use the masks to extract colored pointclouds of the ground truth instances from the RGB-D frames.
+
+For reading images, the corresponding timestamp of each image is expected. This is supplied in a file containing this data.
+
+Example:
+
+    dataset2bag --masks=mask_id --depth=depth_original --images=img --calib=calibration.txt --timestamps=timestamps.txt -o out.bag
 
 ### Camera Calibration Syntax
 
