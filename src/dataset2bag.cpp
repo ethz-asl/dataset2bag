@@ -396,16 +396,16 @@ void saveInstancePointClouds(
     cv::Mat rgb = cv::imread(rgb_entries[seq].path().string());
     cv::cvtColor(rgb, rgb, CV_BGR2RGB);
 
-    std::map<uint8_t, pcl::PointCloud<pcl::PointSurfel> >
+    std::map<uint8_t, pcl::PointCloud<pcl::PointXYZRGBL> >
         instance_pointcloud_map;
-    std::map<uint8_t, pcl::PointCloud<pcl::PointSurfel> >::iterator it;
+    std::map<uint8_t, pcl::PointCloud<pcl::PointXYZRGBL> >::iterator it;
 
     for (int u = 0; u < mask.rows; ++u) {
       for (int v = 0; v < mask.cols; ++v) {
         float z = depth.at<float>(u, v);
         if (z != 0.0f) {
           uint8_t instance_id = mask.at<uint8_t>(u, v);
-          pcl::PointSurfel point_surfel;
+          pcl::PointXYZRGBL point_surfel;
           float u0 = camera_info.K[5];
           float v0 = camera_info.K[2];
           float fy = camera_info.K[4];
@@ -419,12 +419,14 @@ void saveInstancePointClouds(
           point_surfel.g = rgb.at<cv::Vec3b>(u, v)[1];
           point_surfel.b = rgb.at<cv::Vec3b>(u, v)[2];
 
+          point_surfel.label = instance_id;
+
           // Append PointSurfel to the pointcloud of the corresponding instance.
           it = instance_pointcloud_map.find(instance_id);
           if (it != instance_pointcloud_map.end()) {
             it->second.push_back(point_surfel);
           } else {
-            pcl::PointCloud<pcl::PointSurfel> pcl_pointcloud;
+            pcl::PointCloud<pcl::PointXYZRGBL> pcl_pointcloud;
             pcl_pointcloud.push_back(point_surfel);
             instance_pointcloud_map.emplace(instance_id, pcl_pointcloud);
           }
@@ -435,7 +437,7 @@ void saveInstancePointClouds(
     // Convert to pointcloud2 message.
     pcl::PCLPointCloud2 pcl_pointcloud2;
     for (const auto& instance_pointcloud_pair : instance_pointcloud_map) {
-      const pcl::PointCloud<pcl::PointSurfel>& instance_pointcloud =
+      const pcl::PointCloud<pcl::PointXYZRGBL>& instance_pointcloud =
           instance_pointcloud_pair.second;
       sensor_msgs::PointCloud2Ptr pointcloud_msg(new sensor_msgs::PointCloud2);
       pcl::toPCLPointCloud2(instance_pointcloud, pcl_pointcloud2);
