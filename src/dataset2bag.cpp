@@ -386,9 +386,14 @@ void saveInstancePointClouds(
   cv_bridge::CvImage ros_image;
   ProgressBar progress(80);
 
+  float u0 = camera_info.K[2];
+  float v0 = camera_info.K[5];
+  float fy = camera_info.K[4];
+  float fx = camera_info.K[0];
+
   for (size_t seq = 0u; seq < mask_entries.size(); ++seq) {
     cv::Mat mask =
-        cv::imread(mask_entries[seq].path().string(), cv::IMREAD_UNCHANGED);
+        cv::imread(mask_entries[seq].path().string(), cv::IMREAD_GRAYSCALE);
 
     cv::Mat depth =
         cv::imread(depth_entries[seq].path().string(), cv::IMREAD_UNCHANGED);
@@ -400,34 +405,31 @@ void saveInstancePointClouds(
         instance_pointcloud_map;
     std::map<uint8_t, pcl::PointCloud<pcl::PointXYZRGBL> >::iterator it;
 
-    for (int u = 0; u < mask.rows; ++u) {
-      for (int v = 0; v < mask.cols; ++v) {
-        float z = depth.at<float>(u, v);
+    for (int v = 0; v < mask.rows; ++v) {
+      for (int u = 0; u < mask.cols; ++u) {
+        float z = depth.at<float>(v, u);
         if (z != 0.0f) {
-          uint8_t instance_id = mask.at<uint8_t>(u, v);
-          pcl::PointXYZRGBL point_surfel;
-          float u0 = camera_info.K[5];
-          float v0 = camera_info.K[2];
-          float fy = camera_info.K[4];
-          float fx = camera_info.K[0];
+          uint8_t instance_id = mask.at<uint8_t>(v, u);
 
-          point_surfel.x = (float)((v - v0) * z / fx);
-          point_surfel.y = (float)((u - u0) * z / fy);
-          point_surfel.z = z;
+          pcl::PointXYZRGBL point;
 
-          point_surfel.r = rgb.at<cv::Vec3b>(u, v)[0];
-          point_surfel.g = rgb.at<cv::Vec3b>(u, v)[1];
-          point_surfel.b = rgb.at<cv::Vec3b>(u, v)[2];
+          point.x = (float)((u - u0) * z / fx);
+          point.y = (float)((v - v0) * z / fy);
+          point.z = z;
 
-          point_surfel.label = instance_id;
+          point.r = rgb.at<cv::Vec3b>(v, u)[0];
+          point.g = rgb.at<cv::Vec3b>(v, u)[1];
+          point.b = rgb.at<cv::Vec3b>(v, u)[2];
+
+          point.label = instance_id;
 
           // Append PointSurfel to the pointcloud of the corresponding instance.
           it = instance_pointcloud_map.find(instance_id);
           if (it != instance_pointcloud_map.end()) {
-            it->second.push_back(point_surfel);
+            it->second.push_back(point);
           } else {
             pcl::PointCloud<pcl::PointXYZRGBL> pcl_pointcloud;
-            pcl_pointcloud.push_back(point_surfel);
+            pcl_pointcloud.push_back(point);
             instance_pointcloud_map.emplace(instance_id, pcl_pointcloud);
           }
         }
