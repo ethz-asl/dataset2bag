@@ -442,6 +442,8 @@ void saveInstancePointClouds(
       sensor_msgs::PointCloud2Ptr pointcloud_msg(new sensor_msgs::PointCloud2);
       pcl::toPCLPointCloud2(instance_pointcloud, pcl_pointcloud2);
       pcl_conversions::fromPCL(pcl_pointcloud2, *pointcloud_msg);
+      // TODO(margaritaG): multiple point cloud instances in a same frame have
+      // the same seq, probably would want to have it just incremental.
       pointcloud_msg->header.seq = seq;
       pointcloud_msg->header.frame_id = "camera";
       pointcloud_msg->header.stamp = times[seq];
